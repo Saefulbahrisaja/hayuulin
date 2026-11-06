@@ -26,7 +26,7 @@ class LanguageTest extends TestCase
             ->assertRedirect(route('home'));
 
         $this->assertSame('su', session('locale'));
-        $this->get('/')->assertOk()->assertSee('Jalajah Sukabumi.');
+        $this->get('/')->assertOk()->assertSee('Ulin ka Sukabumi!');
     }
 
     public function test_unsupported_language_is_rejected(): void

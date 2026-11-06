@@ -50,6 +50,59 @@ Aplikasi Laravel untuk pencarian destinasi, rekomendasi perjalanan, optimasi uru
 - Pratinjau dan impor terbatas tempat OpenStreetMap dari panel admin; data impor tetap draf sampai diperiksa dan diverifikasi.
 - Dashboard Machine Learning memungkinkan admin mencatat jumlah pengunjung aktual beserta sumber dan status hari libur untuk prediksi kunjungan (Random Forest setelah minimal 12 catatan per destinasi).
 
+## API aplikasi mobile wisatawan
+
+API JSON berversi tersedia di `/api/v1`. API ini ditujukan untuk aplikasi mobile wisatawan; akun admin tidak dapat masuk atau menggunakan endpoint privat. Endpoint katalog dapat dibaca tanpa token dan hanya menampilkan data destinasi/penginapan yang telah diverifikasi.
+
+Autentikasi memakai Laravel Sanctum bearer token:
+
+1. `POST /api/v1/auth/register` dengan `name`, `email`, `password`, `password_confirmation`, dan `device_name`, atau `POST /api/v1/auth/login` dengan `email`, `password`, dan `device_name`.
+2. Kirim token yang diterima pada header `Authorization: Bearer <access_token>` dan header `Accept: application/json`.
+3. Gunakan `GET /api/v1/auth/me` untuk profil dan `POST /api/v1/auth/logout` untuk mencabut token perangkat saat ini. Logout dari perangkat lain memerlukan token perangkat tersebut.
+
+Endpoint katalog publik:
+
+| Method | Endpoint | Keterangan |
+|---|---|---|
+| GET | `/api/v1/categories` | Kategori dan jumlah destinasi terverifikasi |
+| GET | `/api/v1/destinations` | Daftar destinasi; filter opsional `category_id`, `region`, `q`, `min_rating`, `per_page` |
+| GET | `/api/v1/destinations/{id}` | Detail destinasi terverifikasi |
+| GET | `/api/v1/accommodations` | Penginapan terverifikasi; filter `region`, `type`, `max_price`, `per_page` |
+| GET | `/api/v1/transport-options` | Pilihan transportasi aktif |
+| GET | `/api/v1/transport-routes` | Trayek aktif; filter wilayah dan pilihan transportasi |
+
+Endpoint yang memerlukan bearer token wisatawan:
+
+| Method | Endpoint | Keterangan |
+|---|---|---|
+| POST | `/api/v1/trips/recommend` | Rekomendasi personal, optimasi urutan rute, dan estimasi biaya |
+| POST | `/api/v1/trips` | Hitung ulang pilihan perjalanan di server dan simpan itinerary |
+| GET | `/api/v1/trips` | Daftar itinerary milik wisatawan yang masuk |
+| GET | `/api/v1/trips/{id}` | Detail itinerary milik sendiri |
+| PATCH | `/api/v1/trips/{id}/actual-cost` | Simpan biaya aktual untuk perjalanan sendiri |
+| DELETE | `/api/v1/trips/{id}` | Hapus itinerary sendiri |
+| POST | `/api/v1/destinations/{id}/reviews` | Tulis atau perbarui ulasan destinasi |
+| POST | `/api/v1/assistant` | Tanya asisten berdasarkan katalog lokal |
+
+Contoh body rekomendasi (gunakan juga untuk membuat itinerary, dengan tambahan `title`):
+
+```json
+{
+  "origin_name": "Kota Sukabumi",
+  "origin_latitude": -6.9193,
+  "origin_longitude": 106.9267,
+  "budget": 1500000,
+  "days": 2,
+  "travel_date": "2026-12-20",
+  "travelers": 4,
+  "preference": "balanced",
+  "include_accommodation": true,
+  "is_holiday": false
+}
+```
+
+`category_id`, `region`, `min_rating`, `max_distance`, `transport_option_id`, dan `q` bersifat opsional. `preference` menerima `balanced`, `rating`, `budget`, atau `distance`. API mengembalikan JSON dengan objek `data`; respons daftar juga menyertakan `meta` paginasi. Kesalahan validasi mengembalikan HTTP 422. Pembuatan itinerary selalu dihitung ulang oleh server—payload rute atau biaya dari aplikasi mobile tidak dipercaya. Prediksi, jarak, dan tarif tetap berupa perkiraan sesuai ketersediaan data aplikasi.
+
 ## Data dan asumsi
 
 Seeder menyediakan contoh nama/lokasi destinasi dan penginapan serta tarif transportasi indikatif untuk membantu uji coba. Destinasi dan penginapan contoh tidak ditampilkan untuk umum sebelum admin memverifikasi data. Tiket dan harga kamar yang belum diketahui tidak ditandai gratis atau digunakan dalam rekomendasi; harga kamar hanya digunakan setelah admin mengonfirmasikannya. Tarif transportasi/trayek dan biaya tambahan ditampilkan sebagai simulasi indikatif, bukan harga real-time, dan tetap harus dikonfirmasi kepada operator/admin.

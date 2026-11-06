@@ -16,9 +16,133 @@ use App\Services\TripRecommendationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class MobileApiController extends Controller
 {
+    public function map(Request $request)
+    {
+        $filters = $request->validate([
+            'category_id' => ['nullable', 'integer', Rule::exists('categories', 'id')],
+            'region' => ['nullable', 'string', 'max:120'],
+            'layer' => ['nullable', Rule::in(['all', 'destinations', 'accommodations'])],
+            'south' => ['nullable', 'numeric', 'between:-90,90'],
+            'west' => ['nullable', 'numeric', 'between:-180,180'],
+            'north' => ['nullable', 'numeric', 'between:-90,90'],
+            'east' => ['nullable', 'numeric', 'between:-180,180'],
+            'limit' => ['nullable', 'integer', 'between:1,500'],
+            'offset' => ['nullable', 'integer', 'min:0', 'max:1000000'],
+        ]);
+        $boundNames = ['south', 'west', 'north', 'east'];
+        $providedBounds = array_intersect($boundNames, array_keys($filters));
+        if ($providedBounds && count($providedBounds) !== count($boundNames)) {
+            throw ValidationException::withMessages([
+                'bounds' => ['Semua batas peta harus dikirim bersama: south, west, north, dan east.'],
+            ]);
+        }
+        if ($providedBounds && (
+            (float) $filters['south'] >= (float) $filters['north']
+            || (float) $filters['west'] >= (float) $filters['east']
+        )) {
+            throw ValidationException::withMessages([
+                'bounds' => ['Batas selatan/barat harus lebih kecil daripada batas utara/timur.'],
+            ]);
+        }
+
+        $layer = $filters['layer'] ?? 'all';
+        $limit = (int) ($filters['limit'] ?? 500);
+        $offset = (int) ($filters['offset'] ?? 0);
+        $features = collect();
+        $destinations = null;
+        $accommodations = null;
+        $destinationCount = 0;
+        $accommodationCount = 0;
+
+        if ($layer !== 'accommodations') {
+            $destinations = Destination::with('category')
+                ->where('is_verified', true)
+                ->when(isset($filters['category_id']), fn ($query) => $query->where('category_id', $filters['category_id']))
+                ->when(isset($filters['region']), fn ($query) => $query->where('region', 'like', '%'.$filters['region'].'%'))
+                ->when(isset($filters['south']), fn ($query) => $query
+                    ->whereBetween('latitude', [$filters['south'], $filters['north']])
+                    ->whereBetween('longitude', [$filters['west'], $filters['east']]))
+                ->orderByDesc('rating');
+            $destinationCount = (clone $destinations)->count();
+        }
+
+        if ($layer !== 'destinations') {
+            $accommodations = Accommodation::query()
+                ->where('is_active', true)
+                ->where('is_verified', true)
+                ->whereNotNull('latitude')
+                ->whereNotNull('longitude')
+                ->when(isset($filters['region']), fn ($query) => $query->where('region', 'like', '%'.$filters['region'].'%'))
+                ->when(isset($filters['south']), fn ($query) => $query
+                    ->whereBetween('latitude', [$filters['south'], $filters['north']])
+                    ->whereBetween('longitude', [$filters['west'], $filters['east']]))
+                ->orderBy('name');
+            $accommodationCount = (clone $accommodations)->count();
+        }
+
+        $destinationOffset = min($offset, $destinationCount);
+        $destinationLimit = $offset < $destinationCount
+            ? min($limit, $destinationCount - $offset)
+            : 0;
+        if ($destinations && $destinationLimit > 0) {
+            $features = $features->concat(
+                $destinations->offset($destinationOffset)->limit($destinationLimit)->get()
+                    ->map(fn (Destination $destination) => $this->destinationFeature($destination))
+            );
+        }
+
+        $accommodationOffset = max(0, $offset - $destinationCount);
+        $remainingLimit = $limit - $features->count();
+        if ($accommodations && $remainingLimit > 0) {
+            $features = $features->concat(
+                $accommodations->offset($accommodationOffset)->limit($remainingLimit)->get()
+                    ->map(fn (Accommodation $stay) => $this->accommodationFeature($stay))
+            );
+        }
+
+        $features = $features->take($limit)->values();
+        $total = $destinationCount + $accommodationCount;
+        $center = $features->isNotEmpty()
+            ? [
+                'latitude' => round($features->avg(fn (array $feature) => $feature['geometry']['coordinates'][1]), 7),
+                'longitude' => round($features->avg(fn (array $feature) => $feature['geometry']['coordinates'][0]), 7),
+            ]
+            : ['latitude' => -6.98, 'longitude' => 106.78];
+        if (isset($filters['south'])) {
+            $center = [
+                'latitude' => ((float) $filters['south'] + (float) $filters['north']) / 2,
+                'longitude' => ((float) $filters['west'] + (float) $filters['east']) / 2,
+            ];
+        }
+
+        return response()->json([
+            'data' => [
+                'map' => [
+                    'provider' => 'OpenStreetMap',
+                    'tile_url_template' => 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                    'attribution' => '© OpenStreetMap contributors',
+                    'center' => $center,
+                    'zoom' => 9,
+                    'route_note' => 'Garis perjalanan menghubungkan titik berdasarkan urutan kunjungan dan bukan navigasi jalan.',
+                ],
+                'markers' => [
+                    'type' => 'FeatureCollection',
+                    'features' => $features,
+                ],
+            ],
+            'meta' => [
+                'total' => $total,
+                'limit' => $limit,
+                'offset' => $offset,
+                'has_more' => $offset + $features->count() < $total,
+            ],
+        ]);
+    }
+
     public function categories()
     {
         return response()->json([
@@ -182,6 +306,7 @@ class MobileApiController extends Controller
     {
         $form = $request->validate($recommendations->plannerValidationRules());
         $result = $recommendations->recommend($form, $request->user());
+        $result['map'] = $this->tripMapData($result['origin'], collect($result['plan']['stops']));
 
         return response()->json(['data' => $result], 200);
     }
@@ -385,6 +510,14 @@ class MobileApiController extends Controller
             'accommodation_name' => $trip->accommodation_name,
             'cost_breakdown' => $trip->cost_breakdown,
             'preferences' => $trip->preferences,
+            'map' => $this->tripMapData(
+                [
+                    'name' => $trip->origin_name,
+                    'latitude' => (float) $trip->origin_latitude,
+                    'longitude' => (float) $trip->origin_longitude,
+                ],
+                $trip->stops
+            ),
             'stops' => $trip->stops->map(fn ($stop) => [
                 'id' => $stop->id,
                 'destination_id' => $stop->destination_id,
@@ -403,6 +536,99 @@ class MobileApiController extends Controller
                 'leg_minutes' => $stop->leg_minutes,
             ])->values(),
             'created_at' => $trip->created_at?->toISOString(),
+        ];
+    }
+
+    private function destinationFeature(Destination $destination): array
+    {
+        return [
+            'type' => 'Feature',
+            'id' => 'destination-'.$destination->id,
+            'geometry' => [
+                'type' => 'Point',
+                'coordinates' => [(float) $destination->longitude, (float) $destination->latitude],
+            ],
+            'properties' => [
+                'kind' => 'destination',
+                'id' => $destination->id,
+                'name' => $destination->name,
+                'region' => $destination->region,
+                'address' => $destination->address,
+                'category_id' => $destination->category_id,
+                'category' => $destination->category->name,
+                'color' => $destination->category->color,
+                'icon' => $destination->category->icon,
+                'rating' => $destination->rating,
+                'admission_fee' => $destination->admission_fee,
+                'visit_duration_minutes' => $destination->visit_duration_minutes,
+            ],
+        ];
+    }
+
+    private function accommodationFeature(Accommodation $stay): array
+    {
+        return [
+            'type' => 'Feature',
+            'id' => 'accommodation-'.$stay->id,
+            'geometry' => [
+                'type' => 'Point',
+                'coordinates' => [(float) $stay->longitude, (float) $stay->latitude],
+            ],
+            'properties' => [
+                'kind' => 'accommodation',
+                'id' => $stay->id,
+                'name' => $stay->name,
+                'region' => $stay->region,
+                'address' => $stay->address,
+                'accommodation_type' => $stay->type,
+                'price_per_night' => $stay->price_verified_at ? $stay->price_per_night : null,
+                'price_verified' => (bool) $stay->price_verified_at,
+                'capacity' => $stay->capacity,
+                'rating' => $stay->rating,
+            ],
+        ];
+    }
+
+    private function tripMapData(array $origin, $stops): array
+    {
+        $routes = $stops->groupBy('day')->map(function ($dayStops, $day) use ($origin) {
+            $coordinates = [[(float) $origin['longitude'], (float) $origin['latitude']]];
+            foreach ($dayStops as $stop) {
+                $coordinates[] = [
+                    (float) ($stop['longitude'] ?? $stop->longitude),
+                    (float) ($stop['latitude'] ?? $stop->latitude),
+                ];
+            }
+            $coordinates[] = [(float) $origin['longitude'], (float) $origin['latitude']];
+
+            return [
+                'day' => (int) $day,
+                'type' => 'Feature',
+                'geometry' => [
+                    'type' => 'LineString',
+                    'coordinates' => $coordinates,
+                ],
+            ];
+        })->values();
+
+        return [
+            'provider' => 'OpenStreetMap',
+            'tile_url_template' => 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            'attribution' => '© OpenStreetMap contributors',
+            'center' => [
+                'latitude' => (float) $origin['latitude'],
+                'longitude' => (float) $origin['longitude'],
+            ],
+            'zoom' => 10,
+            'origin' => [
+                'name' => $origin['name'],
+                'coordinates' => [
+                    'latitude' => (float) $origin['latitude'],
+                    'longitude' => (float) $origin['longitude'],
+                ],
+            ],
+            'routes' => $routes,
+            'route_note' => 'Garis perjalanan menghubungkan titik berdasarkan urutan kunjungan dan bukan navigasi jalan.',
         ];
     }
 

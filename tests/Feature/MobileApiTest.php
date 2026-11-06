@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\Accommodation;
 use App\Models\Category;
 use App\Models\Destination;
 use App\Models\User;
@@ -71,6 +72,48 @@ class MobileApiTest extends TestCase
         $this->getJson('/api/v1/destinations/'.$verified->id)->assertOk();
     }
 
+    public function test_mobile_map_returns_geojson_markers_basemap_and_bounded_pages(): void
+    {
+        $destination = $this->createDestination(true);
+        $this->createDestination(false);
+        $accommodation = Accommodation::create([
+            'name' => 'Penginapan API',
+            'type' => 'homestay',
+            'region' => $destination->region,
+            'address' => 'Alamat penginapan uji',
+            'latitude' => -6.85,
+            'longitude' => 106.93,
+            'price_per_night' => 250000,
+            'capacity' => 4,
+            'rating' => 4.2,
+            'is_active' => true,
+            'is_verified' => true,
+        ]);
+        $region = $destination->region;
+
+        $this->getJson('/api/v1/map?region='.urlencode($region).'&south=-7&west=106&north=-6&east=107')
+            ->assertOk()
+            ->assertJsonPath('data.map.provider', 'OpenStreetMap')
+            ->assertJsonPath('data.map.tile_url_template', 'https://tile.openstreetmap.org/{z}/{x}/{y}.png')
+            ->assertJsonPath('data.markers.type', 'FeatureCollection')
+            ->assertJsonPath('data.markers.features.0.id', 'destination-'.$destination->id)
+            ->assertJsonPath('data.markers.features.0.geometry.coordinates.0', $destination->longitude)
+            ->assertJsonPath('data.markers.features.0.geometry.coordinates.1', $destination->latitude)
+            ->assertJsonPath('data.markers.features.1.id', 'accommodation-'.$accommodation->id)
+            ->assertJsonPath('data.markers.features.1.properties.price_per_night', null)
+            ->assertJsonPath('meta.total', 2);
+
+        $this->getJson('/api/v1/map?region='.urlencode($region).'&limit=1&offset=1')
+            ->assertOk()
+            ->assertJsonPath('data.markers.features.0.id', 'accommodation-'.$accommodation->id)
+            ->assertJsonPath('meta.has_more', false);
+        $this->getJson('/api/v1/map?south=-6')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('bounds');
+        $this->getJson('/api/v1/map?south=-5&west=107&north=-6&east=106')
+            ->assertUnprocessable();
+    }
+
     public function test_mobile_trips_are_recalculated_and_private_to_their_owner(): void
     {
         $destination = $this->createDestination(true);
@@ -80,7 +123,9 @@ class MobileApiTest extends TestCase
 
         $this->withToken($token)->postJson('/api/v1/trips/recommend', $form)
             ->assertOk()
-            ->assertJsonPath('data.plan.stops.0.id', $destination->id);
+            ->assertJsonPath('data.plan.stops.0.id', $destination->id)
+            ->assertJsonPath('data.map.routes.0.geometry.type', 'LineString')
+            ->assertJsonPath('data.map.routes.0.geometry.coordinates.1.0', $destination->longitude);
 
         $response = $this->withToken($token)->postJson('/api/v1/trips', [
             ...$form,
@@ -89,7 +134,9 @@ class MobileApiTest extends TestCase
         ]);
         $response->assertCreated()
             ->assertJsonPath('data.title', 'Perjalanan mobile')
-            ->assertJsonPath('data.stops.0.destination_id', $destination->id);
+            ->assertJsonPath('data.stops.0.destination_id', $destination->id)
+            ->assertJsonPath('data.map.routes.0.geometry.type', 'LineString')
+            ->assertJsonPath('data.map.routes.0.geometry.coordinates.1.1', $destination->latitude);
 
         $tripId = $response->json('data.id');
         $this->withToken($token)->getJson('/api/v1/trips')->assertOk()->assertJsonPath('meta.total', 1);

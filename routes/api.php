@@ -23,6 +23,7 @@ Route::prefix('v1')->name('api.v1.')->group(function () {
     });
 
     Route::get('/categories', [MobileApiController::class, 'categories'])->name('categories.index');
+    Route::get('/map', [MobileApiController::class, 'map'])->name('map.show');
     Route::get('/destinations', [MobileApiController::class, 'destinations'])->name('destinations.index');
     Route::get('/destinations/{destinationId}', [MobileApiController::class, 'showDestination'])->whereNumber('destinationId')->name('destinations.show');
     Route::get('/accommodations', [MobileApiController::class, 'accommodations'])->name('accommodations.index');

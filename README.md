@@ -65,6 +65,7 @@ Endpoint katalog publik:
 | Method | Endpoint | Keterangan |
 |---|---|---|
 | GET | `/api/v1/categories` | Kategori dan jumlah destinasi terverifikasi |
+| GET | `/api/v1/map` | Pengaturan peta dan marker GeoJSON destinasi/penginapan terverifikasi; filter `layer`, `category_id`, `region`, batas `south`, `west`, `north`, `east`, serta paginasi `limit`/`offset` |
 | GET | `/api/v1/destinations` | Daftar destinasi; filter opsional `category_id`, `region`, `q`, `min_rating`, `per_page` |
 | GET | `/api/v1/destinations/{id}` | Detail destinasi terverifikasi |
 | GET | `/api/v1/accommodations` | Penginapan terverifikasi; filter `region`, `type`, `max_price`, `per_page` |
@@ -102,6 +103,8 @@ Contoh body rekomendasi (gunakan juga untuk membuat itinerary, dengan tambahan `
 ```
 
 `category_id`, `region`, `min_rating`, `max_distance`, `transport_option_id`, dan `q` bersifat opsional. `preference` menerima `balanced`, `rating`, `budget`, atau `distance`. API mengembalikan JSON dengan objek `data`; respons daftar juga menyertakan `meta` paginasi. Kesalahan validasi mengembalikan HTTP 422. Pembuatan itinerary selalu dihitung ulang oleh server—payload rute atau biaya dari aplikasi mobile tidak dipercaya. Prediksi, jarak, dan tarif tetap berupa perkiraan sesuai ketersediaan data aplikasi.
+
+`GET /api/v1/map` mengembalikan konfigurasi peta OpenStreetMap dan marker berformat GeoJSON. Koordinat GeoJSON memakai urutan `[longitude, latitude]`. Parameter `layer` menerima `all`, `destinations`, atau `accommodations`; batas viewport harus dikirim berpasangan sebagai `south`, `west`, `north`, dan `east`. Respons dibatasi 500 marker per permintaan; gunakan `limit` (maksimum 500) dan `offset` untuk memuat halaman selanjutnya. Respons rekomendasi dan itinerary tersimpan juga berisi `map.routes`: garis GeoJSON `LineString` per hari yang menghubungkan titik awal, destinasi sesuai urutan, lalu kembali ke titik awal. Garis ini hanya visualisasi urutan dan jarak perkiraan, bukan navigasi jalan atau rute lalu lintas. Aplikasi mobile dapat menggambar peta dengan `tile_url_template` dan wajib menampilkan `attribution`. Server ubin publik OpenStreetMap disediakan tanpa billing tetapi memiliki kebijakan penggunaan dan bukan layanan ubin/offline tanpa batas; untuk pemakaian tinggi gunakan penyedia ubin yang sesuai atau host sendiri.
 
 ## Data dan asumsi
 
